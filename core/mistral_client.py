@@ -1,4 +1,4 @@
-from mistralai import Mistral
+from mistralai.client import Mistral
 
 from core.settings import get_settings
 

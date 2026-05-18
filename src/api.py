@@ -4,10 +4,21 @@ from pydantic import BaseModel
 
 from core.openai_client import get_openai_client
 from core.settings import get_settings
+from src.generation.router import router as generation_router
 from src.mistral.router import router as mistral_router
 
 api_router = APIRouter()
 api_router.include_router(mistral_router, prefix="/mistral", tags=["mistral"])
+api_router.include_router(
+    generation_router,
+    prefix="/generation",
+    tags=["generation"],
+)
+
+
+@api_router.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
 
 
 class ChatRequest(BaseModel):
