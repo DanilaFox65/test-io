@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 
 from mistralai.extra.utils.response_format import response_format_from_pydantic_model
 
@@ -19,12 +20,15 @@ class GenerationError(Exception):
     pass
 
 
-def _validate_question(raw: GeneratedQuestion, expected_type: QuestionType) -> None:
-    if raw.type != expected_type:
-        raise GenerationError(
-            f"Ожидался тип {expected_type.value}, получен {raw.type.value}"
-        )
+def _expected_type_counts(req: GenerateQuestionsRequest) -> Counter[QuestionType]:
+    assert req.questions is not None
+    counts: Counter[QuestionType] = Counter()
+    for spec in req.questions:
+        counts[spec.type] += spec.count
+    return counts
 
+
+def _validate_question(raw: GeneratedQuestion) -> None:
     if raw.type in (QuestionType.SINGLE_CHOICE, QuestionType.MULTIPLE_CHOICE):
         if len(raw.options) < 2:
             raise GenerationError("У вопроса с вариантами должно быть минимум 2 option")
@@ -47,10 +51,13 @@ def _validate_question(raw: GeneratedQuestion, expected_type: QuestionType) -> N
             raise GenerationError("text: требуется correct_text")
 
 
-def _to_generated(raw: _LLMQuestionsBatch, req: GenerateQuestionsRequest) -> list[GeneratedQuestion]:
-    if len(raw.questions) != req.count:
+def _to_generated(
+    raw: _LLMQuestionsBatch, req: GenerateQuestionsRequest
+) -> list[GeneratedQuestion]:
+    expected_total = req.total_count
+    if len(raw.questions) != expected_total:
         raise GenerationError(
-            f"Ожидалось {req.count} вопросов, модель вернула {len(raw.questions)}"
+            f"Ожидалось {expected_total} вопросов, модель вернула {len(raw.questions)}"
         )
 
     result: list[GeneratedQuestion] = []
@@ -69,16 +76,28 @@ def _to_generated(raw: _LLMQuestionsBatch, req: GenerateQuestionsRequest) -> lis
         )
         if not question.text:
             raise GenerationError("Пустой текст вопроса")
-        _validate_question(question, req.question_type)
+        _validate_question(question)
         result.append(question)
+
+    actual_counts = Counter(q.type for q in result)
+    expected_counts = _expected_type_counts(req)
+    if actual_counts != expected_counts:
+        raise GenerationError(
+            "Неверное распределение типов: "
+            f"ожидалось {dict((k.value, v) for k, v in expected_counts.items())}, "
+            f"получено {dict((k.value, v) for k, v in actual_counts.items())}"
+        )
+
     return result
 
 
 def generate_questions(req: GenerateQuestionsRequest) -> GenerateQuestionsResponse:
     settings = get_settings()
-    if req.count > settings.max_questions_per_request:
+    # Лимит также проверяется в GenerateQuestionsRequest.check_count_limits (422).
+    if req.total_count > settings.max_questions_per_request:
         raise GenerationError(
-            f"count не может превышать {settings.max_questions_per_request}"
+            f"Сумма count ({req.total_count}) превышает MAX_QUESTIONS_PER_REQUEST="
+            f"{settings.max_questions_per_request}"
         )
 
     client = get_mistral_client()
@@ -110,4 +129,5 @@ def generate_questions(req: GenerateQuestionsRequest) -> GenerateQuestionsRespon
         questions=questions,
         model=settings.mistral_model,
         topic=req.topic,
+        total_count=req.total_count,
     )

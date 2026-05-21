@@ -13,43 +13,59 @@ _TYPE_LABELS = {
 }
 
 
-def build_generation_messages(req: GenerateQuestionsRequest) -> list[dict[str, str]]:
-    difficulty = (
-        _DIFFICULTY_LABELS[req.difficulty]
-        if req.difficulty
-        else "средний"
-    )
-    type_label = _TYPE_LABELS[req.question_type]
-
-    system = (
-        "Ты — эксперт по составлению проверочных вопросов для образовательной платформы. "
-        "Генерируй только достоверные вопросы по заданной теме. "
-        "Отвечай строго в формате JSON по схеме: список questions. "
-        "Язык вопросов и вариантов — тот, что указан в запросе."
-    )
-
-    rules = [
-        f"Количество вопросов: ровно {req.count}.",
-        f"Тип каждого вопроса: {req.question_type.value} ({type_label}).",
-        f"Баллы за каждый вопрос: {req.points}.",
-        f"Сложность: {difficulty}.",
-    ]
-
-    if req.question_type in (QuestionType.SINGLE_CHOICE, QuestionType.MULTIPLE_CHOICE):
-        rules.append("У каждого вопроса 4 варианта ответа (options), у каждого поле text и is_correct.")
-        if req.question_type == QuestionType.SINGLE_CHOICE:
+def _rules_for_type(q_type: QuestionType) -> list[str]:
+    label = _TYPE_LABELS[q_type]
+    rules = [f"Тип: {q_type.value} — {label}."]
+    if q_type in (QuestionType.SINGLE_CHOICE, QuestionType.MULTIPLE_CHOICE):
+        rules.append("У каждого такого вопроса 4 варианта (options) с полями text и is_correct.")
+        if q_type == QuestionType.SINGLE_CHOICE:
             rules.append("Ровно один вариант с is_correct=true.")
         else:
             rules.append("Минимум два варианта с is_correct=true.")
     else:
         rules.append("Поле options — пустой массив; укажи correct_text с эталонным ответом.")
+    return rules
 
-    rules.append("Добавь краткое explanation (почему ответ верный) и hint (подсказка без прямого ответа).")
+
+def build_generation_messages(req: GenerateQuestionsRequest) -> list[dict[str, str]]:
+    assert req.questions is not None
+
+    difficulty = (
+        _DIFFICULTY_LABELS[req.difficulty]
+        if req.difficulty
+        else "средний"
+    )
+
+    system = (
+        "Ты — эксперт по составлению проверочных вопросов для образовательной платформы. "
+        "Генерируй только достоверные вопросы по заданной теме. "
+        "Отвечай строго в формате JSON по схеме: список questions. "
+        "У каждого элемента questions поле type должно соответствовать заданному типу. "
+        "Язык вопросов и вариантов — тот, что указан в запросе."
+    )
+
+    distribution_lines = [
+        f"- {spec.count} вопрос(ов) типа {spec.type.value} ({_TYPE_LABELS[spec.type]})"
+        for spec in req.questions
+    ]
+
+    rules = [
+        f"Всего вопросов в ответе: ровно {req.total_count}.",
+        "Распределение по типам:",
+        *distribution_lines,
+        f"Баллы за каждый вопрос: {req.points}.",
+        f"Сложность: {difficulty}.",
+        "Добавь краткое explanation и hint к каждому вопросу.",
+    ]
+
+    for spec in req.questions:
+        rules.append(f"\nПравила для типа {spec.type.value} ({spec.count} шт.):")
+        rules.extend(f"  {line}" for line in _rules_for_type(spec.type))
 
     user_parts = [
         f"Тема: {req.topic}",
         f"Язык: {req.language}",
-        "Правила:\n- " + "\n- ".join(rules),
+        "Правила:\n" + "\n".join(rules),
     ]
     if req.context:
         user_parts.append(f"Контекст для опоры на материалы:\n{req.context}")
